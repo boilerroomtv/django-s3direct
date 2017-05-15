@@ -1,160 +1,217 @@
-(function(){
+var createHash = require('sha.js')
+var Evaporate = require('evaporate');
+var SparkMD5 = require('spark-md5');
+
+
+console.log('Ayo');
+
+
+(function () {
 
     "use strict"
 
-    var getCookie = function(name) {
+    var getCookie = function (name) {
         var value = '; ' + document.cookie,
             parts = value.split('; ' + name + '=')
         if (parts.length == 2) return parts.pop().split(';').shift()
     }
 
-    var request = function(method, url, data, headers, el, showProgress, cb) {
+    var request = function (method, url, data, headers, el, cb) {
         var req = new XMLHttpRequest()
         req.open(method, url, true)
+        console.log(method + 'ing to', url, 'with data', data)
 
-        Object.keys(headers).forEach(function(key){
+        Object.keys(headers).forEach(function (key) {
             req.setRequestHeader(key, headers[key])
         })
 
-        req.onload = function() {
+        req.onload = function () {
             cb(req.status, req.responseText)
         }
 
-        req.onerror = req.onabort = function() {
+        req.onerror = req.onabort = function () {
             disableSubmit(false)
             error(el, 'Sorry, failed to upload file.')
-        }
-
-        req.upload.onprogress = function(data) {
-            progressBar(el, data, showProgress)
         }
 
         req.send(data)
     }
 
-    var parseURL = function(text) {
-        var xml = new DOMParser().parseFromString(text, 'text/xml'),
-            tag = xml.getElementsByTagName('Location')[0],
-            url = decodeURIComponent(tag.childNodes[0].nodeValue)
-
-        return url;
-    }
-
-    var parseNameFromUrl = function(url) {
+    var parseNameFromUrl = function (url) {
         return decodeURIComponent((url + '').replace(/\+/g, '%20'));
     }
 
-    var parseJson = function(json) {
+    var parseJson = function (json) {
         var data
-        try {data = JSON.parse(json)}
-        catch(e){ data = null }
+        try {
+            data = JSON.parse(json)
+        }
+        catch (e) {
+            data = null
+        }
         return data
     }
 
-    var progressBar = function(el, data, showProgress) {
-        if(data.lengthComputable === false || showProgress === false) return
-
-        var pcnt = Math.round(data.loaded * 100 / data.total),
-            bar  = el.querySelector('.bar')
-
-        bar.style.width = pcnt + '%'
+    var updateProgressBar = function (element, progressRatio) {
+        var bar = element.querySelector('.bar');
+        bar.style.width = Math.round(progressRatio * 100) + '%';
     }
 
-    var error = function(el, msg) {
+    var error = function (el, msg) {
         el.className = 's3direct form-active'
-        el.querySelector('.file-input').value = ''
+        el.querySelector('.file-input').value = '';
         alert(msg)
     }
 
-    var update = function(el, xml) {
-        var link = el.querySelector('.file-link'),
-            url  = el.querySelector('.file-url')
+    var concurrentUploads = 0;
 
-        url.value = parseURL(xml)
-        link.setAttribute('href', url.value)
-        link.innerHTML = parseNameFromUrl(url.value).split('/').pop();
-
-        el.className = 's3direct link-active'
-        el.querySelector('.bar').style.width = '0%'
-    }
-
-    var concurrentUploads = 0
-    var disableSubmit = function(status) {
+    var disableSubmit = function (status) {
         var submitRow = document.querySelector('.submit-row')
-        if( ! submitRow) return
+        if (!submitRow) return
 
         var buttons = submitRow.querySelectorAll('input[type=submit],button[type=submit]')
 
         if (status === true) concurrentUploads++
         else concurrentUploads--
 
-        ;[].forEach.call(buttons, function(el){
+        ;
+        [].forEach.call(buttons, function (el) {
             el.disabled = (concurrentUploads !== 0)
         })
-    }
+    };
 
-    var upload = function(file, data, el) {
-        var form = new FormData()
+    var beginUpload = function (element) {
+        disableSubmit(true);
+        element.className = 's3direct progress-active'
+    };
 
-        disableSubmit(true)
+    var finishUpload = function (element, object_key) {
+        var link = element.querySelector('.file-link');
+        var url = element.querySelector('.file-url');
 
-        if (data === null) return error(el, 'Sorry, could not get upload URL.')
+        url.value = object_key;
+        link.setAttribute('href', url.value);
+        link.innerHTML = parseNameFromUrl(url.value).split('/').pop();
 
-        el.className = 's3direct progress-active'
-        var url  = data['form_action']
-        delete data['form_action']
+        element.className = 's3direct link-active';
+        element.querySelector('.bar').style.width = '0%';
+        disableSubmit(false);
+    };
 
-        Object.keys(data).forEach(function(key){
-            form.append(key, data[key])
-        })
-        form.append('file', file)
+    var computeMd5 = function (data) {
+        return btoa(SparkMD5.ArrayBuffer.hash(data, true));
+    };
 
-        request('POST', url, form, {}, el, true, function(status, xml){
-            disableSubmit(false)
-            if(status !== 201) {
-                if (xml.indexOf('<MinSizeAllowed>') > -1) {
-                    return error(el, 'Sorry, the file is too small to be uploaded.')
-                }
-                else if (xml.indexOf('<MaxSizeAllowed>') > -1) {
-                    return error(el, 'Sorry, the file is too large to be uploaded.')
-                }
+    var computeSha256 = function (data) {
+        return createHash('sha256').update(data, 'utf-8').digest('hex');
+    };
 
-                return error(el, 'Sorry, failed to upload file.')
+    var initiateMultipartUpload = function (element, signatureUrl, awsKey, awsRegion, awsBucket, objectKey, file) {
+        console.log('Creating Evaporate instance...');
+        console.log(signatureUrl, awsKey, awsRegion, awsBucket, objectKey, file);
+
+        let generateAwsV4Signature = function (signParams, signHeaders, stringToSign, signatureDateTime, canonicalRequest) {
+            return new Promise(function (resolve, reject) {
+                const form = new FormData();
+                console.log(stringToSign);
+                console.log(signatureDateTime);
+                form.append('to_sign', stringToSign);
+                form.append('datetime', signatureDateTime);
+                const headers = {'X-CSRFToken': getCookie('csrftoken')};
+                request('POST', signatureUrl, form, headers, element, function (status, responseText) {
+                    switch (status) {
+                        case 200:
+                            resolve(responseText);
+                            break;
+                        default:
+                            error(element, 'Could not generate AWS v4 signature.')
+                            reject();
+                            break;
+                    }
+                });
+            })
+        };
+
+        const ev = Evaporate.create(
+            {
+                //signerUrl: signatureUrl,
+                customAuthMethod: generateAwsV4Signature,
+                aws_key: awsKey,
+                bucket: awsBucket,
+                awsRegion: awsRegion,
+                computeContentMd5: true,
+                cryptoMd5Method: computeMd5,
+                cryptoHexEncodedHash256: computeSha256,
+                partSize: 20 * 1024 * 1024,
+                logging: true,
+                debug: true,
             }
-            update(el, xml)
-        })
-    }
+        ).then(function (evaporate) {
+            console.log('Evaporate created.');
+            console.log('Evaporate supported?', evaporate.supported);
+            console.log('dest:', objectKey);
+            console.log('file:', file);
+            beginUpload(element);
+            evaporate.add({
+                name: objectKey,
+                file: file,
+                contentType: file.contentType,
+                progress: function (progressRatio, stats) { updateProgressBar(element, progressRatio); },
+            }).then(
+                function (awsS3ObjectKey) {
+                    console.log('Successfully uploaded to:', awsS3ObjectKey);
+                    finishUpload(element, awsS3ObjectKey);
+                },
+                function (reason) {
+                    console.error('Failed to upload because:', reason);
+                    return error(element, reason)
+                }
+            )
+        });
+    };
 
-    var getUploadURL = function(e) {
-        var el       = e.target.parentElement,
-            file     = el.querySelector('.file-input').files[0],
-            dest     = el.querySelector('.file-dest').value,
-            url      = el.getAttribute('data-policy-url'),
-            form     = new FormData(),
-            headers  = {'X-CSRFToken': getCookie('csrftoken')}
+
+    var getUploadURLThenStartUpload = function (e) {
+        console.log('Getting upload URL...');
+        let el = e.target.parentElement,
+            file = el.querySelector('.file-input').files[0],
+            dest = el.querySelector('.file-dest').value,
+            destinationCheckUrl = el.getAttribute('data-destination-url'),
+            signatureUrl = el.getAttribute('data-signature-url'),
+            form = new FormData(),
+            headers = {'X-CSRFToken': getCookie('csrftoken')};
 
         form.append('type', file.type)
         form.append('name', file.name)
         form.append('dest', dest)
 
-        request('POST', url, form, headers, el, false, function(status, json){
-            var data = parseJson(json)
-
-            switch(status) {
+        request('POST', destinationCheckUrl, form, headers, el, function (status, response) {
+            var uploadParameters = parseJson(response)
+            console.log(uploadParameters)
+            switch (status) {
                 case 200:
-                    upload(file, data, el)
-                    break
+                    initiateMultipartUpload(
+                        el,
+                        signatureUrl,
+                        uploadParameters.access_key_id,
+                        uploadParameters.region,
+                        uploadParameters.bucket,
+                        uploadParameters.key,
+                        file
+                    );
+                    break;
                 case 400:
                 case 403:
-                    error(el, data.error)
+                case 500:
+                    error(el, uploadParameters.error);
                     break;
                 default:
-                    error(el, 'Sorry, could not get upload URL.')
+                    error(el, 'Sorry, could not get upload URL.');
             }
         })
     }
 
-    var removeUpload = function(e) {
+    var removeUpload = function (e) {
         e.preventDefault()
 
         var el = e.target.parentElement
@@ -163,28 +220,29 @@
         el.className = 's3direct form-active'
     }
 
-    var addHandlers = function(el) {
-        var url    = el.querySelector('.file-url'),
-            input  = el.querySelector('.file-input'),
+    var addHandlers = function (el) {
+        var url = el.querySelector('.file-url'),
+            input = el.querySelector('.file-input'),
             remove = el.querySelector('.file-remove'),
             status = (url.value === '') ? 'form' : 'link'
 
         el.className = 's3direct ' + status + '-active'
 
         remove.addEventListener('click', removeUpload, false)
-        input.addEventListener('change', getUploadURL, false)
+        input.addEventListener('change', getUploadURLThenStartUpload, false);
     }
 
-    document.addEventListener('DOMContentLoaded', function(e) {
-        ;[].forEach.call(document.querySelectorAll('.s3direct'), addHandlers)
+    document.addEventListener('DOMContentLoaded', function (e) {
+        //;
+        [].forEach.call(document.querySelectorAll('.s3direct'), addHandlers)
     })
 
-    document.addEventListener('DOMNodeInserted', function(e){
-        if(e.target.tagName) {
+    document.addEventListener('DOMNodeInserted', function (e) {
+        if (e.target.tagName) {
             var el = e.target.querySelectorAll('.s3direct');
             [].forEach.call(el, function (element, index, array) {
-		addHandlers(element);
-	    });
+                addHandlers(element);
+            });
         }
     })
 

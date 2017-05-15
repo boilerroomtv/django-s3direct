@@ -26,7 +26,7 @@ You have two options of providing access to AWS resources:
 2. Use the EC2 instance profile and its attached IAM role
 
 Whether you are using an IAM user or a role, there needs to be an IAM policy
-in effect that grants permission to upload to S3: 
+in effect that grants permission to upload to S3:
 
 ```json
 "Statement": [
@@ -38,7 +38,7 @@ in effect that grants permission to upload to S3:
 ]
 ```
 
-If the instance profile is to be used, the IAM role needs to have a 
+If the instance profile is to be used, the IAM role needs to have a
 Trust Relationship configuration applied:
 
 ```json
@@ -53,7 +53,7 @@ Trust Relationship configuration applied:
 ]
 ```
 
-Note that in order to use the EC2 instance profile, django-s3direct needs 
+Note that in order to use the EC2 instance profile, django-s3direct needs
 to query the EC2 instance metadata using utility functions from the
 [botocore] [] package. You already have `botocore` installed if `boto3`
 is a dependency of your project.
@@ -70,6 +70,7 @@ Setup a CORS policy on your S3 bucket.
         <AllowedMethod>PUT</AllowedMethod>
         <MaxAgeSeconds>3000</MaxAgeSeconds>
         <AllowedHeader>*</AllowedHeader>
+        <ExposeHeader>ETag</ExposeHeader>
     </CORSRule>
 </CORSConfiguration>
 ```
@@ -91,10 +92,10 @@ TEMPLATES = [{
     ...
 }]
 
-# AWS 
+# AWS
 
 # If these are not defined, the EC2 instance profile and IAM role are used.
-# This requires you to add boto3 (or botocore, which is a dependency of boto3) 
+# This requires you to add boto3 (or botocore, which is a dependency of boto3)
 # to your project dependencies.
 AWS_ACCESS_KEY_ID = ''
 AWS_SECRET_ACCESS_KEY = ''
